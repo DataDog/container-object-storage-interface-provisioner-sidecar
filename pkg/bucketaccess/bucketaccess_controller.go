@@ -63,8 +63,9 @@ func NewBucketAccessListener(driverName string, client cosi.ProvisionerClient) (
 
 // Add attempts to provision credentials to access a given bucket. This function must be idempotent
 // Return values
-//    nil - BucketAccess successfully granted
-//    non-nil err - Internal error                                [requeue'd with exponential backoff]
+//
+//	nil - BucketAccess successfully granted
+//	non-nil err - Internal error                                [requeue'd with exponential backoff]
 func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1alpha1.BucketAccess) error {
 	bucketAccess := inputBucketAccess.DeepCopy()
 
@@ -85,11 +86,6 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 		"BucketAccessClassName", bucketAccessClassName,
 	)
 
-	secretCredName := bucketAccess.Spec.CredentialsSecretName
-	if secretCredName == "" {
-		return errors.New("CredentialsSecretName not defined in the BucketAccess")
-	}
-
 	bucketAccessClass, err := bal.bucketAccessClasses().Get(ctx, bucketAccessClassName, metav1.GetOptions{})
 	if err != nil {
 		klog.ErrorS(err, "Failed to fetch bucketAccessClass", "bucketAccessClass", bucketAccessClassName)
@@ -102,6 +98,22 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 			"driver", bucketAccessClass.DriverName,
 		)
 		return nil
+	}
+
+	authType := cosi.AuthenticationType_UnknownAuthenticationType
+	if bucketAccessClass.AuthenticationType == v1alpha1.AuthenticationTypeKey {
+		authType = cosi.AuthenticationType_Key
+	} else if bucketAccessClass.AuthenticationType == v1alpha1.AuthenticationTypeIAM {
+		authType = cosi.AuthenticationType_IAM
+	}
+
+	if authType == cosi.AuthenticationType_IAM && bucketAccess.Spec.ServiceAccountName == "" {
+		return errors.New("Must define ServiceAccountName when AuthenticationType is IAM")
+	}
+
+	secretCredName := bucketAccess.Spec.CredentialsSecretName
+	if secretCredName == "" && authType != cosi.AuthenticationType_IAM {
+		return errors.New("CredentialsSecretName not defined in the BucketAccess")
 	}
 
 	namespace := bucketAccess.ObjectMeta.Namespace
@@ -119,17 +131,6 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 			"bucketAccess", bucketAccess.ObjectMeta.Name,
 		)
 		return errors.Wrap(err, "Invalid arguments")
-	}
-
-	authType := cosi.AuthenticationType_UnknownAuthenticationType
-	if bucketAccessClass.AuthenticationType == v1alpha1.AuthenticationTypeKey {
-		authType = cosi.AuthenticationType_Key
-	} else if bucketAccessClass.AuthenticationType == v1alpha1.AuthenticationTypeIAM {
-		authType = cosi.AuthenticationType_IAM
-	}
-
-	if authType == cosi.AuthenticationType_IAM && bucketAccess.Spec.ServiceAccountName == "" {
-		return errors.New("Must define ServiceAccountName when AuthenticationType is IAM")
 	}
 
 	if bucketAccess.Status.AccessGranted == true {
@@ -151,7 +152,11 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 	}
 
 	accountName := consts.AccountNamePrefix + string(bucketAccess.UID)
-
+	if bucketAccessClass.Parameters == nil {
+		bucketAccessClass.Parameters = make(map[string]string)
+	}
+	bucketAccessClass.Parameters["storageAccountName"] = bucketAccess.Spec.ServiceAccountName
+	bucketAccessClass.Parameters["storageAccountNamespace"] = bucketAccess.Namespace
 	req := &cosi.DriverGrantBucketAccessRequest{
 		BucketId:           bucket.Status.BucketID,
 		Name:               accountName,
@@ -180,7 +185,7 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 	}
 
 	credentials := rsp.Credentials
-	if len(credentials) != 1 {
+	if len(credentials) != 1 && authType != cosi.AuthenticationType_IAM {
 		err = errors.New("Credentials returned in DriverGrantBucketAccessResponse should be of length 1")
 		klog.V(3).ErrorS(err, "BucketAccess", bucketAccess.ObjectMeta.Name)
 		return errors.Wrap(err, fmt.Sprintf("BucketAccess %s", bucketAccess.ObjectMeta.Name))
@@ -291,8 +296,9 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 
 // Update attempts to reconcile changes to a given bucketAccess. This function must be idempotent
 // Return values
-//    nil - BucketAccess successfully reconciled
-//    non-nil err - Internal error                                [requeue'd with exponential backoff]
+//
+//	nil - BucketAccess successfully reconciled
+//	non-nil err - Internal error                                [requeue'd with exponential backoff]
 func (bal *BucketAccessListener) Update(ctx context.Context, old, new *v1alpha1.BucketAccess) error {
 	klog.V(3).InfoS("Update BucketAccess",
 		"name", old.ObjectMeta.Name)
@@ -312,8 +318,9 @@ func (bal *BucketAccessListener) Update(ctx context.Context, old, new *v1alpha1.
 
 // Delete attemps to delete a bucketAccess. This function must be idempotent
 // Return values
-//    nil - BucketAccess successfully deleted
-//    non-nil err - Internal error                                [requeue'd with exponential backoff]
+//
+//	nil - BucketAccess successfully deleted
+//	non-nil err - Internal error                                [requeue'd with exponential backoff]
 func (bal *BucketAccessListener) Delete(ctx context.Context, bucketAccess *v1alpha1.BucketAccess) error {
 	klog.V(3).InfoS("Delete BucketAccess",
 		"name", bucketAccess.ObjectMeta.Name,
