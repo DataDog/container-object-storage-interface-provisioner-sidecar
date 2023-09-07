@@ -1,6 +1,14 @@
-FROM gcr.io/distroless/static:latest
-LABEL maintainers="Kubernetes COSI Authors"
+ARG BASE_IMAGE
+
+FROM golang:1.20 as builder
+WORKDIR /go/src/DataDog/container-object-storage-interface-provisioner-sidecar
+ADD . .
+ENV GOFLAGS="-buildvcs=false"
+RUN make build
+
+FROM $BASE_IMAGE
+LABEL maintainers="Compute"
 LABEL description="Object Storage Sidecar"
 
-COPY ./bin/objectstorage-sidecar objectstorage-sidecar
+COPY --from=builder /go/src/DataDog/container-object-storage-interface-provisioner-sidecar/bin/objectstorage-sidecar objectstorage-sidecar
 ENTRYPOINT ["/objectstorage-sidecar"]
